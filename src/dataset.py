@@ -59,15 +59,31 @@ def _collect_npy_stems(names: List[str], prefix: str) -> Dict[str, str]:
     """Return {stem: full_member_name} for .npy files under *prefix* in a ZIP.
 
     Handles both ``prefix/ID.npy`` and ``train/prefix/ID.npy`` layouts.
+
+    Filters out:
+    - macOS metadata directories (``__MACOSX/...``)
+    - macOS resource-fork files (filenames starting with ``._``)
+    - Any non-.npy entries
     """
     mapping: Dict[str, str] = {}
     for name in names:
         # Normalise path separators
         normed = name.replace("\\", "/")
-        # Accept  "prefix/ID.npy"  or  "subdir/prefix/ID.npy"
+
+        # Skip macOS metadata directories
+        if "__MACOSX" in normed:
+            continue
+
         parts = normed.split("/")
-        if len(parts) >= 2 and parts[-2] == prefix and parts[-1].endswith(".npy"):
-            stem = Path(parts[-1]).stem
+        filename = parts[-1]
+
+        # Skip macOS resource-fork files (e.g. "._001804.npy")
+        if filename.startswith("._"):
+            continue
+
+        # Accept  "prefix/ID.npy"  or  "subdir/prefix/ID.npy"
+        if len(parts) >= 2 and parts[-2] == prefix and filename.endswith(".npy"):
+            stem = Path(filename).stem
             mapping[stem] = name
     return mapping
 

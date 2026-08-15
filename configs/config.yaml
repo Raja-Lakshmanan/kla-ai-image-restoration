@@ -1,0 +1,23 @@
+# config.yaml - Configuration settings placeholder
+# Actual experiment parameters, dataset paths, model parameters, and output paths will be added later.
+
+dataset:
+  # TODO: Add dataset paths, batch sizes, and data loading parameters
+  train_path: null
+  val_path: null
+  test_path: null
+
+model:
+  # TODO: Add model architecture selection and hyperparameters
+  name: null
+
+training:
+  # TODO: Add learning rate, epochs, optimizer, and loss parameters
+  epochs: null
+  learning_rate: null
+
+paths:
+  # TODO: Add output paths for weights and results
+  weights_dir: "weights/"
+  results_dir: "results/"
+  output_dir: "restored_test_outputs/"

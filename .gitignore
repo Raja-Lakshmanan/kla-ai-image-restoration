@@ -216,3 +216,27 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ============================================================
+# KLA AI Image Restoration - Project Specific
+# ============================================================
+
+# Dataset - DO NOT upload the hackathon dataset
+data/
+dataset/
+*.npy
+
+# Local training outputs
+outputs/
+checkpoints/
+logs/
+
+# Temporary experiment files
+*.tmp
+
+# Local configuration / secrets
+.env
+
+# Model weights
+# Keep final submission weights available separately if needed.
+# Large weights should use Git LFS or an external download link.

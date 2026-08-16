@@ -5,8 +5,10 @@ Handles loading of paired NoisyLR (128x128) and GT (256x256) images
 from the KLA hackathon dataset.  Supports reading directly from ZIP
 archives or from extracted directories.
 
-Arrays are loaded lazily — one sample at a time inside __getitem__() —
-so the full dataset is never held in RAM simultaneously.
+Arrays are loaded lazily — one sample at a time inside __getitem__().
+Each ZIP access opens and closes the archive within a short-lived
+``with`` block to avoid the Windows "stale handle" crash that occurs
+when a ZipFile object is kept open across thousands of reads.
 
 Verified dataset properties (from PHASE 1 analysis):
 - 3200 paired training samples
@@ -53,6 +55,33 @@ def _load_npy_from_zip(
     with zip_handle.open(member_name) as f:
         data = np.load(io.BytesIO(f.read()))
     return data
+
+
+def _load_npy_pair_from_zip(
+    zip_path: Path,
+    noisy_member: str,
+    gt_member: str,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Open a ZIP, read one NoisyLR + GT pair, and close immediately.
+
+    Uses a short-lived ``with`` block so no file handle persists between
+    calls.  This avoids the Windows OSError that occurs when a cached
+    ZipFile handle goes stale during long training runs.
+    """
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        noisy_np = _load_npy_from_zip(zf, noisy_member)
+        gt_np = _load_npy_from_zip(zf, gt_member)
+    return noisy_np, gt_np
+
+
+def _load_npy_single_from_zip(
+    zip_path: Path,
+    member_name: str,
+) -> np.ndarray:
+    """Open a ZIP, read one .npy member, and close immediately."""
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        arr = _load_npy_from_zip(zf, member_name)
+    return arr
 
 
 def _collect_npy_stems(names: List[str], prefix: str) -> Dict[str, str]:
@@ -203,11 +232,11 @@ def _scan_test_zip(
 
 
 # ---------------------------------------------------------------------------
-# Training / Validation Dataset  (lazy loading)
+# Training / Validation Dataset  (lazy loading, short-lived ZIP access)
 # ---------------------------------------------------------------------------
 
 class KLARestorationDataset(Dataset):
-    """PyTorch Dataset for paired NoisyLR → GT image restoration.
+    """PyTorch Dataset for paired NoisyLR -> GT image restoration.
 
     Each ``__getitem__`` call returns::
 
@@ -218,9 +247,11 @@ class KLARestorationDataset(Dataset):
         }
 
     Data is loaded **lazily** — one sample per ``__getitem__`` call.
-    When backed by a ZIP archive the handle is opened once per
-    OS-level process (safe for ``DataLoader`` with ``num_workers > 0``
-    because each worker is a separate process and gets its own handle).
+    When backed by a ZIP archive, each call opens and closes the ZIP
+    within a short-lived ``with`` block.  No persistent file handle is
+    held between calls, which avoids the Windows OSError ("Invalid
+    argument") that occurs with long-lived cached handles during
+    extended training runs.
 
     NoisyLR values are preserved exactly as stored (may be outside [0, 1]).
     GT values are expected to lie within [0, 1] and are not modified.
@@ -229,16 +260,16 @@ class KLARestorationDataset(Dataset):
     ----------
     sample_ids : list[str]
         Ordered list of sample filename stems (e.g. ["00001", "00002"]).
+    noisy_members : dict[str, str]
+        Mapping from stem -> ZIP member name **or** filesystem path for
+        each NoisyLR file.
+    gt_members : dict[str, str]
+        Mapping from stem -> ZIP member name **or** filesystem path for
+        each GT file.
     zip_path : Path or None
         Path to the ZIP archive.  Mutually exclusive with *data_dir*.
     data_dir : Path or None
         Path to an extracted directory.  Mutually exclusive with *zip_path*.
-    noisy_members : dict[str, str]
-        Mapping from stem → ZIP member name **or** filesystem path for
-        each NoisyLR file.
-    gt_members : dict[str, str]
-        Mapping from stem → ZIP member name **or** filesystem path for
-        each GT file.
     validate : bool
         If True, validate array shape, dtype, NaN/Inf on every access.
     """
@@ -266,9 +297,6 @@ class KLARestorationDataset(Dataset):
         self._data_dir = data_dir
         self._validate = validate
 
-        # Will be lazily opened once per process (see _get_zip_handle)
-        self._zip_handle: Optional[zipfile.ZipFile] = None
-
         # Verify that every requested ID has a mapping
         missing_noisy = [s for s in sample_ids if s not in self._noisy_members]
         missing_gt = [s for s in sample_ids if s not in self._gt_members]
@@ -283,46 +311,19 @@ class KLARestorationDataset(Dataset):
                 f"(first 5: {missing_gt[:5]})"
             )
 
-    # -- ZIP handle lifecycle -----------------------------------------------
-
-    def _get_zip_handle(self) -> zipfile.ZipFile:
-        """Return a lazily-opened, per-process ZipFile handle."""
-        if self._zip_handle is None:
-            assert self._zip_path is not None
-            self._zip_handle = zipfile.ZipFile(self._zip_path, "r")
-        return self._zip_handle
-
-    def __getstate__(self) -> Dict[str, Any]:
-        """Exclude the open ZipFile handle when pickling (DataLoader workers)."""
-        state = self.__dict__.copy()
-        state["_zip_handle"] = None
-        return state
-
-    def __setstate__(self, state: Dict[str, Any]) -> None:
-        """Restore state; the handle will be lazily re-opened in the worker."""
-        self.__dict__.update(state)
-
-    def __del__(self) -> None:
-        """Close the ZipFile handle when the dataset is garbage-collected."""
-        if self._zip_handle is not None:
-            try:
-                self._zip_handle.close()
-            except Exception:
-                pass
-
-    # -- Core interface -----------------------------------------------------
-
     def __len__(self) -> int:
         return len(self.sample_ids)
 
     def __getitem__(self, index: int) -> Dict[str, Any]:
         sample_id = self.sample_ids[index]
 
-        # Lazy load from ZIP or directory
+        # Lazy load — short-lived ZIP access (open, read, close)
         if self._zip_path is not None:
-            zf = self._get_zip_handle()
-            noisy_np = _load_npy_from_zip(zf, self._noisy_members[sample_id])
-            gt_np = _load_npy_from_zip(zf, self._gt_members[sample_id])
+            noisy_np, gt_np = _load_npy_pair_from_zip(
+                self._zip_path,
+                self._noisy_members[sample_id],
+                self._gt_members[sample_id],
+            )
         else:
             noisy_np = np.load(self._noisy_members[sample_id])
             gt_np = np.load(self._gt_members[sample_id])
@@ -345,7 +346,7 @@ class KLARestorationDataset(Dataset):
 
 
 # ---------------------------------------------------------------------------
-# Test Dataset  (NoisyLR only, no GT — lazy loading)
+# Test Dataset  (NoisyLR only, no GT — lazy loading, short-lived ZIP access)
 # ---------------------------------------------------------------------------
 
 class KLATestDataset(Dataset):
@@ -358,18 +359,18 @@ class KLATestDataset(Dataset):
             "sample_id": str,
         }
 
-    Same lazy-loading and ZIP-handle lifecycle as ``KLARestorationDataset``.
+    Same short-lived ZIP access pattern as ``KLARestorationDataset``.
 
     Parameters
     ----------
     sample_ids : list[str]
         Ordered list of sample filename stems.
+    noisy_members : dict[str, str]
+        Mapping from stem -> ZIP member name or filesystem path.
     zip_path : Path or None
         Path to the test ZIP archive.
     data_dir : Path or None
         Path to an extracted test directory with NoisyLR/ subfolder.
-    noisy_members : dict[str, str]
-        Mapping from stem → ZIP member name or filesystem path.
     validate : bool
         If True, validate array shape, dtype, NaN/Inf on access.
     """
@@ -394,7 +395,6 @@ class KLATestDataset(Dataset):
         self._zip_path = zip_path
         self._data_dir = data_dir
         self._validate = validate
-        self._zip_handle: Optional[zipfile.ZipFile] = None
 
         missing = [s for s in sample_ids if s not in self._noisy_members]
         if missing:
@@ -403,40 +403,18 @@ class KLATestDataset(Dataset):
                 f"(first 5: {missing[:5]})"
             )
 
-    # -- ZIP handle lifecycle -----------------------------------------------
-
-    def _get_zip_handle(self) -> zipfile.ZipFile:
-        if self._zip_handle is None:
-            assert self._zip_path is not None
-            self._zip_handle = zipfile.ZipFile(self._zip_path, "r")
-        return self._zip_handle
-
-    def __getstate__(self) -> Dict[str, Any]:
-        state = self.__dict__.copy()
-        state["_zip_handle"] = None
-        return state
-
-    def __setstate__(self, state: Dict[str, Any]) -> None:
-        self.__dict__.update(state)
-
-    def __del__(self) -> None:
-        if self._zip_handle is not None:
-            try:
-                self._zip_handle.close()
-            except Exception:
-                pass
-
-    # -- Core interface -----------------------------------------------------
-
     def __len__(self) -> int:
         return len(self.sample_ids)
 
     def __getitem__(self, index: int) -> Dict[str, Any]:
         sample_id = self.sample_ids[index]
 
+        # Lazy load — short-lived ZIP access (open, read, close)
         if self._zip_path is not None:
-            zf = self._get_zip_handle()
-            noisy_np = _load_npy_from_zip(zf, self._noisy_members[sample_id])
+            noisy_np = _load_npy_single_from_zip(
+                self._zip_path,
+                self._noisy_members[sample_id],
+            )
         else:
             noisy_np = np.load(self._noisy_members[sample_id])
 
@@ -475,7 +453,7 @@ def create_train_val_datasets(
     seed : int
         Random seed for the train/validation split (default: 42).
     train_ratio : float
-        Fraction of data used for training (default: 0.9 → 2880 train, 320 val).
+        Fraction of data used for training (default: 0.9 -> 2880 train, 320 val).
     validate : bool
         If True, validate array shapes and dtypes on access.
 

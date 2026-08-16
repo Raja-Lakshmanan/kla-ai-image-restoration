@@ -13,6 +13,9 @@ Usage:
     Full training:
         python train.py --train-zip train.zip --epochs 100
 
+    Resume from checkpoint:
+        python train.py --train-zip train.zip --epochs 100 --resume-from weights/best_model.pth
+
     Custom configuration:
         python train.py --train-zip train.zip --epochs 50 --batch-size 16 --lr 2e-4
 """
@@ -36,7 +39,7 @@ from torch.utils.data import DataLoader, Subset
 # Project imports
 from src.dataset import create_train_val_datasets
 from src.model import KLARestorationModel, count_parameters
-from src.losses import RestorationL1Loss
+from src.losses import RestorationL1Loss, CombinedL1SSIMLoss
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +274,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate.")
     parser.add_argument("--weight-decay", type=float, default=1e-4, help="AdamW weight decay.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
+    parser.add_argument(
+        "--loss", type=str, default="l1", choices=["l1", "l1_ssim"],
+        help="Loss function to use.",
+    )
 
     # Checkpointing
     parser.add_argument(
@@ -288,6 +295,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--smoke-test", action="store_true", default=False,
         help="Run a quick 1-epoch smoke test with a small data subset.",
+    )
+
+    # Resume
+    parser.add_argument(
+        "--resume-from", type=str, default=None,
+        help="Path to a checkpoint file to resume training from.",
     )
 
     # DataLoader
@@ -323,6 +336,8 @@ def main() -> None:
         "smoke_test": args.smoke_test,
         "num_workers": args.num_workers,
         "checkpoint_path": args.checkpoint_path,
+        "resume_from": args.resume_from,
+        "loss": args.loss,
     }
 
     print("\nConfiguration:")
@@ -390,13 +405,18 @@ def main() -> None:
     print(f"[train] Model: KLARestorationModel ({num_params:,} parameters)")
 
     # ---- Loss & Optimizer ------------------------------------------------
-    criterion = RestorationL1Loss()
+    if args.loss == "l1_ssim":
+        criterion = CombinedL1SSIMLoss(alpha=1.0, beta=0.1)
+        print(f"[train] Loss: CombinedL1SSIMLoss (alpha=1.0, beta=0.1)")
+    else:
+        criterion = RestorationL1Loss()
+        print(f"[train] Loss: RestorationL1Loss")
+        
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=args.lr,
         weight_decay=args.weight_decay,
     )
-    print(f"[train] Loss: RestorationL1Loss")
     print(f"[train] Optimizer: AdamW (lr={args.lr}, weight_decay={args.weight_decay})")
 
     # ---- AMP setup -------------------------------------------------------
@@ -409,15 +429,33 @@ def main() -> None:
             print("[train] AMP requested but CUDA not available; disabled")
             args.amp = False
 
-    # ---- Training loop ---------------------------------------------------
+    # ---- Resume from checkpoint ------------------------------------------
+    start_epoch = 1
     best_val_loss = float("inf")
     checkpoint_path = Path(args.checkpoint_path)
 
+    if args.resume_from is not None:
+        resume_path = Path(args.resume_from)
+        if not resume_path.is_file():
+            raise FileNotFoundError(
+                f"Checkpoint not found: {resume_path}"
+            )
+        print(f"\n[train] Resuming from checkpoint: {resume_path}")
+        ckpt = torch.load(resume_path, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt["model_state_dict"])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        start_epoch = ckpt["epoch"] + 1
+        best_val_loss = ckpt["val_loss"]
+        print(f"[train]   Resumed epoch:          {ckpt['epoch']}")
+        print(f"[train]   Previous best val loss: {best_val_loss:.6f}")
+        print(f"[train]   Continuing from epoch:  {start_epoch}")
+
+    # ---- Training loop ---------------------------------------------------
     print(f"\n{'='*64}")
     print(f"{'Epoch':>6}  {'Train Loss':>12}  {'Val Loss':>12}  {'Time (s)':>10}  {'Status':>8}")
     print(f"{'-'*64}")
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         epoch_start = time.time()
 
         # Train

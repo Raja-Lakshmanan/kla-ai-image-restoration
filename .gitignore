@@ -240,3 +240,7 @@ logs/
 # Model weights
 # Keep final submission weights available separately if needed.
 # Large weights should use Git LFS or an external download link.
+
+# Keep generated KLA submission outputs
+!restored_test_outputs/
+!restored_test_outputs/*.npy

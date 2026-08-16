@@ -1,32 +1,29 @@
-# KLA Hackathon 2026: AI-Based Restoration of Degraded Images
+# KLA Hackathon 2026 — AI-Based Restoration of Degraded Images
 
-This repository is for the KLA Hackathon 2026 problem statement: **AI-Based Restoration of Degraded Images**.
+AI-powered restoration of noisy, low-resolution semiconductor inspection images using a lightweight residual CNN with 2× PixelShuffle super-resolution.
 
-## Overview
-The goal of this project is to develop an AI-based model to restore degraded images (such as semiconductor inspection images) to high quality.
+## Problem Statement
 
-## Project Structure
-- `configs/`: Configuration files for training and evaluation pipeline settings.
-- `src/`: Core Python modules (dataset loading, model architecture, loss functions, metrics, utilities).
-- `train.py`: Script to train the restoration model from scratch.
-- `evaluate.py`: Standalone evaluation script to run model inference on test images and output restored images.
-- `weights/`: Directory reserved for trained model weights.
-- `restored_test_outputs/`: Directory reserved for saving model-restored test image outputs.
-- `results/`: Directory reserved for quantitative and qualitative evaluation results.
-- `requirements.txt`: Environment dependencies required to run training and evaluation.
+The goal is to transform degraded NoisyLR semiconductor inspection images into high-quality, analysis-ready images by:
 
-## Setup & Instructions
-*(To be updated after model implementation and environment finalization)*
+- Suppressing noise
+- Recovering fine spatial details
+- Enhancing image quality
+- Reconstructing images from 128×128 to 256×256
 
-## TODO
-- [ ] Finalize PyTorch Dataset and DataLoader pipelines in `src/dataset.py`.
-- [ ] Implement AI model architecture in `src/model.py`.
-- [ ] Define training loss functions in `src/losses.py`.
-- [ ] Define evaluation metrics (e.g., PSNR, SSIM) in `src/metrics.py`.
-- [ ] Implement utility helper functions in `src/utils.py`.
-- [ ] Configure experiment parameters in `configs/config.yaml`.
-- [ ] Build end-to-end reproducible training script in `train.py`.
-- [ ] Build standalone evaluation and inference script in `evaluate.py`.
-- [ ] Populate `requirements.txt` with exact pinned dependencies.
-- [ ] Save trained model weights to `weights/`.
-- [ ] Generate and verify restored test outputs in `restored_test_outputs/`.
+## Final Model
+
+Architecture:
+
+- Grayscale input/output
+- Input: `128×128`
+- Output: `256×256`
+- 8 residual blocks
+- 64 feature channels
+- 2× PixelShuffle upsampling
+- Trainable parameters: `630,734`
+
+Final checkpoint:
+
+```text
+weights/best_model.pth
